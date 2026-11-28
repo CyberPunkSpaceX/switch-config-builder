@@ -129,14 +129,16 @@ the links between them, and checks that both ends of every link agree.
 
 ![Network map with three switches](docs/screenshots/08-network-map.png)
 
-**Fetch from switches over SSH** (client admins, on the Network map tab): enter
+**Fetch from switches over SSH** (on the Network map tab): enter
 the switch addresses, and the builder runs `show configuration | display set`,
 `show lldp neighbors`, `show version` and `show virtual-chassis` on each one and adds them to the map. Each client sets
 its own switch networks and SSH key under **Clients → (client) → Fetching
 configs over SSH**; it is off for a client until its networks are set. Safety
 rules, all on by default:
 
-- only that client's admins can use it, and only addresses inside its networks
+- client admins can fetch with a key or a password; every other member of the
+  client (Configurator and Read-only) can fetch only with the client's
+  **read-only key**, as its switch user. Only addresses inside its networks
   are reached (every address a name resolves to is checked). The server limits
   what a client may enter: `EXB_SSH_ALLOW` if set, otherwise the private ranges.
   `EXB_SSH_DISABLE=true` turns it off for everyone;
@@ -145,8 +147,11 @@ rules, all on by default:
   password is used for that fetch and dropped, never saved or logged, but it
   still passes through the server, so the page warns about it and suggests a
   read-only account with its own password;
-- each client's SSH key is made by the server (**Make an SSH key**); only the
-  public half is shown, and the private half is stored encrypted with a master
+- each client can have two keys, both made by the server: a **read-only key**
+  (fetch, compare, nightly backups, discovery) and a **config key** (pushes
+  only; a push with a key never uses the read-only key or the server-wide
+  key). Each has its own switch username. Only client admins make, see or use
+  the config key. Only the public half is shown, and the private half is stored encrypted with a master
   key (`EXB_MASTER_KEY_FILE`, best as a Docker secret; otherwise
   `<data>/master_key` is made on first use);
 - each switch's SSH host key is remembered on first contact
@@ -155,17 +160,24 @@ rules, all on by default:
 - every attempt is logged (`audit: ssh fetch by … for client …`, without
   secrets), and each user gets at most `EXB_SSH_RATE` fetches a minute (default 10).
 
-The client page shows the commands for a read-only Junos account with the
-client's public key, like this:
+For each key, the client page shows the commands that make its account on
+Junos, Arista EOS, NX-OS, Aruba CX and MikroTik (Cisco IOS-XE only takes RSA
+user keys, so use a password there). For Junos:
 
 ```
-set system login class switchbuilder-ro permissions view-configuration
+# read-only key
 set system login class switchbuilder-ro permissions view
+set system login class switchbuilder-ro permissions view-configuration
 set system login user switchbuilder-ro class switchbuilder-ro authentication ssh-ed25519 "ssh-ed25519 AAAA..."
+# config key (a push may replace the whole config, so all permissions, minus reboot/zeroize/shell)
+set system login class switchbuilder-cfg permissions all
+set system login class switchbuilder-cfg deny-commands "(request system (reboot|halt|power-off|zeroize))|(start shell)"
+set system login user switchbuilder-cfg class switchbuilder-cfg authentication ssh-ed25519 "ssh-ed25519 AAAA..."
 ```
 
 A server-wide key (`EXB_SSH_KEY_FILE` plus `EXB_SSH_KEY_USER`, from a Docker
-secret) still works for clients that have no key of their own.
+secret) still works as the read-only key for clients that have none of their
+own. It is never used to push.
 
 ### From Lab to Production (approval and promote)
 
@@ -266,8 +278,8 @@ each switch** as a .zip. Only client admins delete backups.
 
 **Compare.** Pick a config for side A and side B:
 
-* **Live switch**: fetched now over SSH (client admins; the client's SSH key is
-  used when it has one), and kept as a backup too.
+* **Live switch**: fetched now over SSH (client admins, or any member with the
+  client's read-only key), and kept as a backup too.
 * **A config backup**, for example last week's.
 * **The builder's config**: what the builder makes for the current project.
 * **A switch on the network map**, for example one pulled from an EVE-NG lab.
@@ -346,8 +358,8 @@ Limits: `EXB_SYSLOG_RATE` messages a second per sender (200),
 On a client's page (**Clients → the client**), **Download a backup** saves one
 JSON file with the client's projects, network maps, config backups, settings
 and people. Tick **Leave out the switch config backups** for a smaller file.
-The SSH key and the EVE-NG password are left out unless you tick **Include the
-SSH key and the EVE-NG password**; even then they stay encrypted with this
+The SSH keys and the EVE-NG password are left out unless you tick **Include the
+SSH keys and the EVE-NG password**; even then they stay encrypted with this
 server's master key and only work on this server. The file still holds the
 switch configs, with the switches' own secrets in them, so store it like a
 password.

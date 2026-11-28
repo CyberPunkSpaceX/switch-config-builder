@@ -732,7 +732,7 @@ pre.cfg { margin: 0; max-height: 520px; min-height: 160px; overflow: auto; backg
         {% if not client %}
         <p class="hint">You are not in any client yet. Ask an admin to add you to one.</p>
         {% elif not ssh.can_fetch %}
-        <p class="hint">Only admins of {{ client.name }} can fetch configs from switches.</p>
+        <p class="hint">{{ client.name }} has no read-only SSH key yet, and only its admins can sign in with a password. Ask a client admin to make the read-only key on the client page.</p>
         {% elif ssh.off %}
         <p class="hint">SSH fetch is turned off on this server.</p>
         {% elif not ssh.enabled %}
@@ -742,21 +742,21 @@ pre.cfg { margin: 0; max-height: 520px; min-height: 160px; overflow: auto; backg
         <div class="authpick">
           <b>Sign in with</b>
           <label class="check"><input type="radio" name="ssh-auth" value="key"{% if ssh.key %} checked{% else %} disabled{% endif %}> SSH key <span class="tag ok">Recommended</span></label>
-          <label class="check"><input type="radio" name="ssh-auth" value="password"{% if not ssh.key %} checked{% endif %}> Password</label>
-          <p class="hint" id="ssh-auth-note-key"{% if not ssh.key %} hidden{% endif %}>The server signs in with its stored key{% if ssh.key_user %} as <b>{{ ssh.key_user }}</b>{% endif %}. Nobody types or sends a password.</p>
+          {% if ssh.can_password %}<label class="check"><input type="radio" name="ssh-auth" value="password"{% if not ssh.key %} checked{% endif %}> Password</label>{% endif %}
+          <p class="hint" id="ssh-auth-note-key"{% if not ssh.key %} hidden{% endif %}>The server signs in with the read-only key{% if ssh.key_user %} as <b>{{ ssh.key_user }}</b>{% endif %}. Nobody types or sends a password.{% if not ssh.can_password %} As a non-admin you always fetch with this key.{% endif %}</p>
           <p class="hint" id="ssh-auth-note-pw">{% if not ssh.key %}<b>No SSH key is set up yet</b>, so only the password option is available. You can make one under <a href="{{ url_for('clients.client_page', cid=client.id) }}#ssh">Clients → {{ client.name }}</a>. {% endif %}</p>
           <div class="authwarn" id="ssh-pw-warn"{% if ssh.key %} hidden{% endif %}><b>Less safe:</b> the password travels from your browser to this server, and then to each switch. The server uses it for this one fetch and never saves or logs it. However, anyone who controls this server or your browser could still see it. Use a read-only account with its own password, never an admin or root password. The SSH key option avoids this.</div>
         </div>
         <div class="grid">
           <div class="field wide"><label>Switches (address or name, one per line or comma separated)</label><textarea id="ssh-hosts" style="min-height:70px" placeholder="10.40.45.21&#10;10.40.45.22"></textarea></div>
-          <div class="field"><label>Username</label><input type="text" id="ssh-user" autocomplete="off" spellcheck="false" value="{{ ssh.key_user }}"></div>
+          <div class="field"><label>Username</label><input type="text" id="ssh-user" autocomplete="off" spellcheck="false" value="{{ ssh.key_user }}"{% if not ssh.can_password %} readonly{% endif %}></div>
           <div class="field" id="ssh-pass-field"{% if ssh.key %} hidden{% endif %}><label>Password</label><input type="password" id="ssh-pass" autocomplete="new-password"></div>
           <div class="field"><label>SSH port</label><input type="text" id="ssh-port" value="22"></div>
         </div>
         <div class="toolbar" style="margin-top:8px">
           <button type="button" id="ssh-go">Fetch configs</button>
           <span class="status" id="ssh-status"></span><span class="grow"></span>
-          <button class="secondary small" type="button" id="ssh-known-btn">Known switches…</button>
+          {% if ssh.can_password %}<button class="secondary small" type="button" id="ssh-known-btn">Known switches…</button>{% endif %}
         </div>
         <ul class="msgs" id="ssh-results"></ul>
         <div id="ssh-known" class="hide"></div>
@@ -941,8 +941,8 @@ pre.cfg { margin: 0; max-height: 520px; min-height: 160px; overflow: auto; backg
             <div class="grid"><div class="field"><label>Username</label><input type="text" data-cmp-user autocomplete="off"></div>
               <div class="field"><label>Password</label><input type="password" data-cmp-pass autocomplete="new-password"></div></div>
             <p class="hint">No SSH key is set up for {{ client.name }}, so a password is needed (it is used for this one fetch and never kept). A key is safer: <a href="{{ url_for('clients.client_page', cid=client.id) }}#ssh">set one up</a>.</p>
-            {% else %}<p class="hint">Signs in with {{ client.name }}'s SSH key{% if ssh.key_user %} as <b>{{ ssh.key_user }}</b>{% endif %}. The fetched config is kept as a backup too.</p>{% endif %}
-            {% elif client and not ssh.can_fetch %}<p class="hint">Only admins of {{ client.name }} can fetch from switches. Compare with the newest SSH backup instead.</p>
+            {% else %}<p class="hint">Signs in with {{ client.name }}'s read-only SSH key{% if ssh.key_user %} as <b>{{ ssh.key_user }}</b>{% endif %}. The fetched config is kept as a backup too.</p>{% endif %}
+            {% elif client and not ssh.can_fetch %}<p class="hint">{{ client.name }} has no read-only SSH key yet, so only its admins can fetch (with a password). Compare with the newest SSH backup instead.</p>
             {% else %}<p class="hint">SSH fetch is not set up{% if client %} for {{ client.name }}{% endif %}. Compare with a backup or pasted config instead.</p>{% endif %}
           </div>
           <div data-cmp-opt="backup" class="hide"><div class="field"><label>Backup</label><select data-cmp-backup><option value="">No backups yet</option></select></div></div>
@@ -1011,12 +1011,12 @@ pre.cfg { margin: 0; max-height: 520px; min-height: 160px; overflow: auto; backg
         <div class="field"><label>Rollback timer (minutes)</label><input type="number" id="push-minutes" min="1" max="60" value="10"></div>
         <div class="field"><label>How to load</label><select id="push-mode"><option value="merge">The builder's set commands (as you would paste them)</option><option value="replace">Replace the whole config (load override)</option></select></div>
         <div class="field wide">
-          <label class="check"><input type="radio" name="push-auth" value="key"{% if ssh.key %} checked{% else %} disabled{% endif %}> SSH key <span class="tag ok">Recommended</span></label>
-          <label class="check"><input type="radio" name="push-auth" value="password"{% if not ssh.key %} checked{% endif %}> Password</label>
-          <p class="hint">The account needs to be allowed to configure the switch. A password is kept only in this page while the push is open (for the check and the confirm), never on the server.</p>
+          <label class="check"><input type="radio" name="push-auth" value="key"{% if ssh.cfg_key %} checked{% else %} disabled{% endif %}> Config SSH key <span class="tag ok">Recommended</span></label>
+          <label class="check"><input type="radio" name="push-auth" value="password"{% if not ssh.cfg_key %} checked{% endif %}> Password</label>
+          <p class="hint">{% if not ssh.cfg_key %}<b>No config key yet</b> (the read-only key can't push): make one under <a href="{{ url_for('clients.client_page', cid=client.id) }}#key-cfg">Clients → {{ client.name }}</a>. {% endif %}The account needs to be allowed to configure the switch. A password is kept only in this page while the push is open (for the check and the confirm), never on the server.</p>
         </div>
-        <div class="field"><label>Username</label><input type="text" id="push-user" autocomplete="off" spellcheck="false" value="{{ ssh.key_user }}"></div>
-        <div class="field" id="push-pass-field"{% if ssh.key %} hidden{% endif %}><label>Password</label><input type="password" id="push-pass" autocomplete="new-password"></div>
+        <div class="field"><label>Username</label><input type="text" id="push-user" autocomplete="off" spellcheck="false" value="{{ ssh.cfg_user }}"></div>
+        <div class="field" id="push-pass-field"{% if ssh.cfg_key %} hidden{% endif %}><label>Password</label><input type="password" id="push-pass" autocomplete="new-password"></div>
         <div class="field"><label>SSH port</label><input type="text" id="push-port" value="22"></div>
       </div>
       <div class="toolbar"><button type="button" id="push-preview">Preview changes</button><span class="status" id="push-status"></span></div>
@@ -2825,7 +2825,7 @@ document.getElementById("map-png").onclick = () => {
 renderMapList();
 
 
-// --------------------------------------------------- fetch over SSH (admins)
+// --------------------------------------------------- fetch over SSH (admins; other members with the read-only key)
 if (SSH.enabled && SSH.can_fetch) {
   const sshStatus = (t, c) => { const el = document.getElementById("ssh-status"); el.textContent = t || ""; el.className = "status " + (c || ""); };
   document.querySelectorAll('input[name="ssh-auth"]').forEach(r => r.addEventListener("change", () => {
@@ -2870,7 +2870,8 @@ if (SSH.enabled && SSH.can_fetch) {
       (data.hosts.map(h => `<div class="toolbar"><code>${esc(h.host)}</code> <span class="hint" style="margin:0">${esc(h.type)} ${esc(h.fingerprint)}</span><span class="grow"></span><button class="danger small" type="button" data-ssh-forget="${esc(h.host)}">Clear</button></div>`).join("") || `<p class="hint">None yet.</p>`);
     box.classList.remove("hide");
   };
-  document.getElementById("ssh-known-btn").onclick = showKnown;
+  const knownBtn = document.getElementById("ssh-known-btn");
+  if (knownBtn) knownBtn.onclick = showKnown;
   document.getElementById("ssh-known").addEventListener("click", async ev => {
     const b = ev.target.closest("[data-ssh-forget]"); if (!b || !window.confirm("Forget the SSH key of " + b.dataset.sshForget + "?")) return;
     await fetch("ssh/forget", {method: "POST", headers: {"Content-Type": "application/json", "X-CSRF-Token": CSRF}, body: JSON.stringify({host: b.dataset.sshForget})});

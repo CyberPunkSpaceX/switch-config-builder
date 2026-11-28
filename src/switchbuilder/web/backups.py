@@ -309,7 +309,7 @@ def compare_configs():
 
 
 # ------------------------------------------------------ client backup
-CLIENT_SETTINGS = ("ssh_networks", "ssh_user", "ssh_key_pub", "eve_url", "eve_user", "eve_folder", "eve_verify",
+CLIENT_SETTINGS = ("ssh_networks", "ssh_user", "ssh_key_pub", "ssh_user_cfg", "ssh_key_cfg_pub", "eve_url", "eve_user", "eve_folder", "eve_verify",
                    "eve_template", "eve_image")
 
 
@@ -333,6 +333,7 @@ def export_client(cid: int, with_secrets: bool = False, with_configs: bool = Tru
             "ORDER BY id", (cid,))]
     if with_secrets:
         out["secrets"] = {"encrypted_with": "this server's master key", "ssh_key": r["ssh_key"],
+                          "ssh_key_cfg": r["ssh_key_cfg"],
                           "eve_password": r["eve_password"]}
     return out
 
@@ -394,9 +395,10 @@ def import_client(cid: int, data: dict, replace: bool = True, settings: bool = F
                 notes += [("error", f"SSH networks not restored: {p}") for p in problems]
             else:
                 db.execute("UPDATE clients SET ssh_networks = ? WHERE id = ?", (", ".join(map(str, nets)), cid))
-            user = str(src.get("ssh_user") or "")
-            if not user or auth.USERNAME_RE.match(user):
-                db.execute("UPDATE clients SET ssh_user = ? WHERE id = ?", (user, cid))
+            for ucol in ("ssh_user", "ssh_user_cfg"):
+                user = str(src.get(ucol) or "")
+                if not user or auth.USERNAME_RE.match(user):
+                    db.execute(f"UPDATE clients SET {ucol} = ? WHERE id = ?", (user, cid))
             url = str(src.get("eve_url") or "")
             try:
                 if url:
@@ -414,7 +416,8 @@ def import_client(cid: int, data: dict, replace: bool = True, settings: bool = F
                 notes.append(("error", f"EVE-NG settings not restored: {exc}"))
             secrets_in = data.get("secrets") if isinstance(data.get("secrets"), dict) else {}
             restored = []
-            for col, label in (("ssh_key", "SSH key"), ("eve_password", "EVE-NG password")):
+            for col, label in (("ssh_key", "read-only SSH key"), ("ssh_key_cfg", "config SSH key"),
+                               ("eve_password", "EVE-NG password")):
                 value = secrets_in.get(col)
                 if not value:
                     continue
@@ -426,8 +429,8 @@ def import_client(cid: int, data: dict, replace: bool = True, settings: bool = F
                     notes.append(("error", msg))
                     continue
                 db.execute(f"UPDATE clients SET {col} = ? WHERE id = ?", (value, cid))
-                if col == "ssh_key":
-                    db.execute("UPDATE clients SET ssh_key_pub = ? WHERE id = ?", (str(src.get("ssh_key_pub") or ""), cid))
+                if col in ("ssh_key", "ssh_key_cfg"):
+                    db.execute(f"UPDATE clients SET {col}_pub = ? WHERE id = ?", (str(src.get(f"{col}_pub") or ""), cid))
                 restored.append(label)
             notes.append(("ok", "Settings restored" + (f", with the {' and '.join(restored)}" if restored else "") + "."))
         if people:

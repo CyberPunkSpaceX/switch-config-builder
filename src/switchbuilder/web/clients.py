@@ -15,11 +15,18 @@ Roles:
 * A user with ``users.all_clients`` set has that role in every client, also
   in clients made later. A membership with a higher role wins.
 
-SSH settings per client: the networks its switches are in, an optional SSH key
-the server makes for it, the username for that key, and the known switch host
-keys (in ``<data>/clients/<id>/ssh_known_hosts``). The private key is stored
-encrypted with a master key from ``EXB_MASTER_KEY_FILE`` (a Docker secret is
-best), or else ``<data>/master_key``, created on first use.
+SSH settings per client: the networks its switches are in, up to two SSH keys
+the server makes for it, each with its own switch username, and the known
+switch host keys (in ``<data>/clients/<id>/ssh_known_hosts``):
+
+* the read-only key (``ssh_key``, ``ssh_user``) for SSH fetch, compare, nightly
+  backups and discovery. Every member may fetch with it; only admins may sign in
+  with a typed password instead.
+* the config key (``ssh_key_cfg``, ``ssh_user_cfg``) for pushes. Only client
+  admins make it, and pushes with a key always use this one.
+
+Private keys are stored encrypted with a master key from ``EXB_MASTER_KEY_FILE``
+(a Docker secret is best), or else ``<data>/master_key``, created on first use.
 """
 
 from __future__ import annotations
@@ -61,7 +68,10 @@ CREATE TABLE IF NOT EXISTS clients (
     ssh_networks TEXT NOT NULL DEFAULT '',
     ssh_user TEXT NOT NULL DEFAULT '',
     ssh_key TEXT,          -- private key, encrypted with the master key
-    ssh_key_pub TEXT       -- public key line, shown to admins
+    ssh_key_pub TEXT,      -- public key line, shown to admins
+    ssh_user_cfg TEXT NOT NULL DEFAULT '',
+    ssh_key_cfg TEXT,      -- the config (push) key, encrypted with the master key
+    ssh_key_cfg_pub TEXT
 );
 CREATE TABLE IF NOT EXISTS client_members (
     client_id INTEGER NOT NULL,
@@ -102,6 +112,7 @@ def migrate(conn: sqlite3.Connection, folder: Path) -> None:
         conn.execute("ALTER TABLE projects RENAME TO projects_old")
     conn.executescript(SCHEMA)
     _add_space(conn)
+    _add_key_columns(conn)
     if "clients" not in tables:  # first start with clients: make the first one
         conn.execute("INSERT INTO clients (name, created_at) VALUES (?, ?)", (FIRST_CLIENT, auth._now()))
     first = conn.execute("SELECT id FROM clients ORDER BY id LIMIT 1").fetchone()
@@ -137,6 +148,14 @@ def migrate(conn: sqlite3.Connection, folder: Path) -> None:
         dest.mkdir(parents=True, exist_ok=True)
         if not (dest / "ssh_known_hosts").exists():
             shutil.move(str(old_known), dest / "ssh_known_hosts")
+
+
+def _add_key_columns(conn: sqlite3.Connection) -> None:
+    """Clients from before the config key: add its columns (their old key is the read-only key)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(clients)")}
+    for col, kind in (("ssh_user_cfg", "TEXT NOT NULL DEFAULT ''"), ("ssh_key_cfg", "TEXT"), ("ssh_key_cfg_pub", "TEXT")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE clients ADD COLUMN {col} {kind}")
 
 
 def _add_space(conn: sqlite3.Connection) -> None:
@@ -259,26 +278,44 @@ def _fernet():
         return Fernet(base64.urlsafe_b64encode(hashlib.sha256(raw).digest()))
 
 
-def ssh_key_for(client_row) -> object | None:
-    """The client's own key, else the server-wide key, as a paramiko key (or None)."""
-    if client_row["ssh_key"]:
-        return sshfetch.load_key(_fernet().decrypt(client_row["ssh_key"].encode()).decode())
-    return sshfetch.server_key()
+# kind -> (private key column, public key column, switch username column)
+KEY_COLS = {"ro": ("ssh_key", "ssh_key_pub", "ssh_user"), "cfg": ("ssh_key_cfg", "ssh_key_cfg_pub", "ssh_user_cfg")}
+
+
+def ssh_key_for(client_row, kind: str = "ro") -> object | None:
+    """A client's key as a paramiko key (or None).
+
+    ``ro``: the client's read-only key, else the server-wide key (EXB_SSH_KEY_FILE).
+    ``cfg``: the client's config key only; the server-wide key is never used to push.
+    """
+    col = KEY_COLS[kind][0]
+    if client_row[col]:
+        return sshfetch.load_key(_fernet().decrypt(client_row[col].encode()).decode())
+    return sshfetch.server_key() if kind == "ro" else None
+
+
+def key_user_for(client_row, kind: str = "ro") -> str:
+    """The switch username for a client's key (the server-wide key's user as a fallback for read-only)."""
+    user = client_row[KEY_COLS[kind][2]] or ""
+    return user or (sshfetch.key_user() if kind == "ro" else "")
 
 
 def ssh_settings() -> dict:
     """What the builder page needs to know about SSH for the current client (never secrets)."""
     c = current()
     out = {"enabled": False, "allow": [], "key": False, "key_user": "", "client": c["name"] if c else "",
-           "can_fetch": False, "off": sshfetch.disabled()}
+           "can_fetch": False, "can_password": False, "cfg_key": False, "cfg_user": "", "off": sshfetch.disabled()}
     if c is None:
         return out
     r = row(c["id"])
     nets, _ = sshfetch.check_networks(r["ssh_networks"])
-    own = bool(r["ssh_key"])
-    out.update(enabled=bool(nets) and not sshfetch.disabled(), allow=[str(n) for n in nets],
-               key=own or bool(sshfetch.key_file()), key_user=r["ssh_user"] or ("" if own else sshfetch.key_user()),
-               can_fetch=c["role"] == "admin")
+    key = bool(r["ssh_key"]) or bool(sshfetch.key_file())
+    admin = c["role"] == "admin"
+    # Everyone in the client may fetch with the read-only key; only admins type passwords or see the config key.
+    out.update(enabled=bool(nets) and not sshfetch.disabled(), allow=[str(n) for n in nets], key=key,
+               key_user=key_user_for(r), can_fetch=admin or key, can_password=admin)
+    if admin:
+        out.update(cfg_key=bool(r["ssh_key_cfg"]), cfg_user=r["ssh_user_cfg"] or "")
     return out
 
 
@@ -451,8 +488,21 @@ def client_page(cid: int):
                                              "OR all_clients IN ('viewer', 'editor', 'admin') ORDER BY username COLLATE NOCASE")]
     return render_template("auth/client.html", c=r, everywhere=everywhere, n_backups=n_backups, eve=eve.settings(r), members=members, roles=ROLES, server_admin=_is_server_admin(),
                            problems=problems, ceiling=[str(n) for n in sshfetch.ceiling()],
-                           ssh_off=sshfetch.disabled(), server_key=bool(sshfetch.key_file()),
+                           ssh_off=sshfetch.disabled(), server_key=bool(sshfetch.key_file()), key_setup=_key_setup(r),
                            known=sshfetch.known_hosts(client_folder(cid)))
+
+
+def _key_setup(r) -> list[dict]:
+    """Both key slots for the client page: label, public key and the switch commands for each vendor."""
+    from .. import keysetup
+    out = []
+    for kind in keysetup.KINDS:
+        _, pub_col, user_col = KEY_COLS[kind]
+        pub = r[pub_col] or ""
+        out.append({"kind": kind, "label": keysetup.LABELS[kind], "pub": pub,
+                    "user": r[user_col] or keysetup.DEFAULT_USER[kind],
+                    "commands": keysetup.commands(kind, r[user_col], pub) if pub else []})
+    return out
 
 
 @bp.post("/clients/<int:cid>")
@@ -538,28 +588,42 @@ def client_update(cid: int):
         text = request.form.get("networks", "")
         nets, problems = sshfetch.check_networks(text)
         user = request.form.get("ssh_user", "").strip()
+        user_cfg = request.form.get("ssh_user_cfg", r["ssh_user_cfg"] or "").strip()
         if problems:
             for p in problems:
                 flash(p, "error")
-        elif user and not auth.USERNAME_RE.match(user):
+        elif any(u and not auth.USERNAME_RE.match(u) for u in (user, user_cfg)):
             flash("The switch username has characters that are not allowed.", "error")
+        elif user and user == user_cfg:
+            flash("Use two different switch usernames for the read-only and the config key.", "error")
         else:
-            db.execute("UPDATE clients SET ssh_networks = ?, ssh_user = ? WHERE id = ?",
-                       (", ".join(map(str, nets)), user, cid))
-            audit(f"set SSH networks to {', '.join(map(str, nets)) or 'none'} and key user to {user!r}")
+            db.execute("UPDATE clients SET ssh_networks = ?, ssh_user = ?, ssh_user_cfg = ? WHERE id = ?",
+                       (", ".join(map(str, nets)), user, user_cfg, cid))
+            audit(f"set SSH networks to {', '.join(map(str, nets)) or 'none'}, read-only key user to {user!r} "
+                  f"and config key user to {user_cfg!r}")
             flash("SSH settings saved." if nets else "SSH settings saved. SSH fetch is off for this client "
                   "until you add the switch networks.", "ok")
-    elif action == "key_generate":
-        private, public = sshfetch.generate_key(f"switchbuilder-{re.sub(r'[^A-Za-z0-9]+', '-', r['name']).strip('-')}")
-        db.execute("UPDATE clients SET ssh_key = ?, ssh_key_pub = ? WHERE id = ?",
-                   (_fernet().encrypt(private.encode()).decode(), public, cid))
-        del private
-        audit("made a new SSH key")
-        flash("New SSH key made. Add the public key below to the read-only account on each switch.", "ok")
-    elif action == "key_delete":
-        db.execute("UPDATE clients SET ssh_key = NULL, ssh_key_pub = NULL WHERE id = ?", (cid,))
-        audit("deleted the SSH key")
-        flash("SSH key deleted.", "ok")
+    elif action in ("key_generate", "key_delete"):
+        kind = request.form.get("kind", "ro")
+        if kind not in KEY_COLS:
+            abort(400)
+        priv_col, pub_col, _ = KEY_COLS[kind]
+        label = "read-only" if kind == "ro" else "config"
+        if action == "key_generate":
+            slug = re.sub(r'[^A-Za-z0-9]+', '-', r['name']).strip('-')
+            private, public = sshfetch.generate_key(f"switchbuilder-{kind}-{slug}")
+            db.execute(f"UPDATE clients SET {priv_col} = ?, {pub_col} = ? WHERE id = ?",
+                       (_fernet().encrypt(private.encode()).decode(), public, cid))
+            del private
+            audit(f"made a new {label} SSH key")
+            flash(f"New {label} SSH key made. Add its public key to the {label} account on each switch "
+                  "(the commands are below).", "ok")
+        else:
+            db.execute(f"UPDATE clients SET {priv_col} = NULL, {pub_col} = NULL WHERE id = ?", (cid,))
+            audit(f"deleted the {label} SSH key")
+            flash(f"{label.capitalize()} SSH key deleted.", "ok")
+        db.commit()
+        return redirect(url_for("clients.client_page", cid=cid) + "#ssh")
     elif action == "eve":
         from . import eve
         problems = eve.save_settings(cid, request.form)

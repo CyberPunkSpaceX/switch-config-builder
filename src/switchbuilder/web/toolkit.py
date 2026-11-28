@@ -236,10 +236,10 @@ def map_discover():
     password = str(body.get("password") or "")
     pkey = None
     if body.get("use_key"):
-        pkey = clients.ssh_key_for(row)
+        pkey = clients.ssh_key_for(row, "ro")
         if pkey is None:
-            return {"error": "This client has no SSH key yet. A client admin makes one on the client page."}, 400
-        username = username or row["ssh_user"] or sshfetch.key_user()
+            return {"error": "This client has no read-only SSH key yet. A client admin makes one on the client page."}, 400
+        username = username or clients.key_user_for(row, "ro")
         password = ""
     elif not (username and password):
         return {"error": "Enter the switch username and password, or sign in with the SSH key."}, 400

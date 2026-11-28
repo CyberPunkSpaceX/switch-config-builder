@@ -111,8 +111,13 @@ class Server(paramiko.ServerInterface):
     def check_channel_request(self, kind, chanid):
         return paramiko.OPEN_SUCCEEDED
 
+    pubkeys: dict = {}   # switch username -> base64 of the public key it accepts
+
     def get_allowed_auths(self, username):
-        return "password"
+        return "password,publickey"
+
+    def check_auth_publickey(self, username, key):
+        return paramiko.AUTH_SUCCESSFUL if Server.pubkeys.get(username) == key.get_base64() else paramiko.AUTH_FAILED
 
     def check_auth_password(self, username, password):
         return paramiko.AUTH_SUCCESSFUL if (username, password) == ("netops", "Secret-123") else paramiko.AUTH_FAILED
@@ -375,3 +380,34 @@ def test_load_errors_stop_the_push(switch, tmp_path):
         shell.close()
     with pytest.raises(engine.PushError, match="not available yet"):
         engine.connect("unifi", "127.0.0.1", "netops", "x", tmp_path, switch["port"], nets)
+
+
+def test_push_with_a_key_uses_the_config_key_only(app, admin, switch):
+    import re as _re
+    pid = _setup(app, admin, switch)
+    key_body = {"project_id": pid, "host": "127.0.0.1", "port": switch["port"], "use_key": True}
+    # Only a read-only key (on its own switch account): pushing with a key is refused, nothing is sent.
+    _form(admin, "/clients/1", action="key_generate", kind="ro")
+    _form(admin, "/clients/1", action="ssh", networks="127.0.0.0/8", ssh_user="sb-ro", ssh_user_cfg="sb-cfg")
+    page = admin.get("/clients/1").get_data(as_text=True)
+    ro_pub = _re.search(r'id="pub-ro"[^>]*>ssh-ed25519 (\S+)', page).group(1)
+    Server.pubkeys = {"sb-ro": ro_pub}
+    r = _post(admin, "/push/preview", key_body)
+    assert r.status_code == 400 and "config SSH key" in r.json["error"]
+    assert "load set terminal" not in switch["cli"].log
+    build = admin.get("/build/juniper").get_data(as_text=True)
+    assert 'name="push-auth" value="key" disabled' in build and "No config key yet" in build
+    # The config key: its own key and switch user, used for the push.
+    _form(admin, "/clients/1", action="key_generate", kind="cfg")
+    page = admin.get("/clients/1").get_data(as_text=True)
+    cfg_pub = _re.search(r'id="pub-cfg"[^>]*>ssh-ed25519 (\S+)', page).group(1)
+    assert cfg_pub != ro_pub and "class switchbuilder-cfg permissions all" in page
+    assert "set system login class switchbuilder-ro permissions view-configuration" in page
+    Server.pubkeys = {"sb-ro": ro_pub, "sb-cfg": cfg_pub}
+    r = _post(admin, "/push/preview", key_body)
+    assert r.status_code == 200, r.json
+    # The read-only key on the config account would not do: the push really signed in with the config key.
+    Server.pubkeys = {"sb-cfg": ro_pub}
+    r = _post(admin, "/push/preview", key_body)
+    assert r.status_code == 502 and "sign-in failed" in r.json["error"]
+    Server.pubkeys = {}

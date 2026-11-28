@@ -64,41 +64,59 @@
       <div class="hint">The app only connects to switch addresses inside these networks. This server allows networks inside {{ ceiling|join(", ") }}.</div>
       {% for p in problems %}<div class="flash error" style="margin-top:6px">{{ p }}</div>{% endfor %}
     </div>
+    <div class="grid" style="display:flex; gap:12px; flex-wrap:wrap">
     <div class="field" style="max-width: 320px">
-      <label for="su">Switch username for the SSH key</label>
+      <label for="su">Switch username for the read-only key</label>
       <input id="su" type="text" name="ssh_user" value="{{ c['ssh_user'] }}" placeholder="switchbuilder-ro" autocomplete="off">
+    </div>
+    <div class="field" style="max-width: 320px">
+      <label for="suc">Switch username for the config key</label>
+      <input id="suc" type="text" name="ssh_user_cfg" value="{{ c['ssh_user_cfg'] }}" placeholder="switchbuilder-cfg" autocomplete="off">
+    </div>
     </div>
     <button type="submit">Save SSH settings</button>
   </form>
 
-  <h2 style="margin-top: 22px">SSH key <span class="badge on">recommended</span></h2>
-  <p class="hint">With a key, nobody types a switch password. The server makes the key; the private half never leaves
-    the server and is stored encrypted. Add the public half to a read-only account on each switch.</p>
-  {% if c['ssh_key_pub'] %}
-  <label for="pub">Public key</label>
-  <textarea id="pub" readonly rows="2" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font: 12px ui-monospace, Menlo, Consolas, monospace">{{ c['ssh_key_pub'] }}</textarea>
-  <p class="hint">On each switch (in configure mode), make a read-only account with this key:</p>
-  <pre style="white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 12px">set system login class switchbuilder-ro permissions view-configuration
-set system login class switchbuilder-ro permissions view
-set system login user {{ c['ssh_user'] or 'switchbuilder-ro' }} class switchbuilder-ro authentication {{ c['ssh_key_pub'].split(' ')[0] }} "{{ c['ssh_key_pub'].split(' ')[:2]|join(' ') }}"</pre>
-  <form class="inline" method="post" onsubmit="return confirm('Make a new key? The old key stops working, so every switch needs the new public key.')">
+  <h2 style="margin-top: 22px">SSH keys <span class="badge on">recommended</span></h2>
+  <p class="hint">With a key, nobody types a switch password. The server makes each key; the private half never leaves
+    the server and is stored encrypted. There are two, each for its own account on the switches:</p>
+  <ul class="hint">
+    <li><b>Read-only key</b>: fetching configs, compare, nightly backups and discovery. Every member of {{ c['name'] }}
+      can fetch with it, Read-only members too (they can't type a switch password instead).</li>
+    <li><b>Config key</b>: pushing approved configs. Only admins of {{ c['name'] }} can push, and a push with a key always
+      signs in with this one, never with the read-only key.</li>
+  </ul>
+  {% for k in key_setup %}
+  <h3 style="margin-top: 16px" id="key-{{ k.kind }}">{{ k.label }} key <span class="muted" style="font-weight:400">· switch account <code>{{ k.user }}</code></span></h3>
+  {% if k.pub %}
+  <label for="pub-{{ k.kind }}">Public key</label>
+  <textarea id="pub-{{ k.kind }}" readonly rows="2" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font: 12px ui-monospace, Menlo, Consolas, monospace">{{ k.pub }}</textarea>
+  <p class="hint">On each switch (in configure mode), make the {{ k.label|lower }} account with this key. Pick your vendor:</p>
+  {% for cmd in k.commands %}
+  <details class="explain"{% if loop.first %} open{% endif %} style="margin-top:4px"><summary>{{ cmd.vendor }}</summary>
+    {% if cmd.text %}<pre style="white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 12px">{{ cmd.text }}</pre>{% endif %}
+    {% if cmd.note %}<p class="hint">{{ cmd.note }}</p>{% endif %}
+  </details>
+  {% endfor %}
+  <form class="inline" method="post" onsubmit="return confirm('Make a new {{ k.label|lower }} key? The old one stops working, so every switch needs the new public key.')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="action" value="key_generate">
-    <button class="small secondary">Make a new key</button>
+    <input type="hidden" name="action" value="key_generate"><input type="hidden" name="kind" value="{{ k.kind }}">
+    <button class="small secondary">Make a new {{ k.label|lower }} key</button>
   </form>
-  <form class="inline" method="post" onsubmit="return confirm('Delete this client\'s SSH key?')">
+  <form class="inline" method="post" onsubmit="return confirm('Delete the {{ k.label|lower }} SSH key of this client?')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="action" value="key_delete">
-    <button class="small danger">Delete key</button>
+    <input type="hidden" name="action" value="key_delete"><input type="hidden" name="kind" value="{{ k.kind }}">
+    <button class="small danger">Delete {{ k.label|lower }} key</button>
   </form>
   {% else %}
-  <p>{% if server_key %}No key of its own yet: this client uses the server-wide key.{% else %}No key yet, so only password sign-in works.{% endif %}</p>
+  <p>{% if k.kind == 'ro' %}{% if server_key %}No read-only key of its own yet: this client uses the server-wide key.{% else %}No read-only key yet, so only admins can fetch (with a password).{% endif %}{% else %}No config key yet, so pushes need the password of a switch account that may configure.{% endif %}</p>
   <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="action" value="key_generate">
-    <button type="submit">Make an SSH key</button>
+    <input type="hidden" name="action" value="key_generate"><input type="hidden" name="kind" value="{{ k.kind }}">
+    <button type="submit">Make a {{ k.label|lower }} key</button>
   </form>
   {% endif %}
+  {% endfor %}
 
   <h2 style="margin-top: 22px">Known switches</h2>
   <p class="hint">Each switch's SSH host key is remembered the first time. If it changes (the switch was replaced or
@@ -117,7 +135,7 @@ set system login user {{ c['ssh_user'] or 'switchbuilder-ro' }} class switchbuil
   </table></div>
 
   <h2 style="margin-top: 22px">Nightly backups</h2>
-  <p class="hint">Back up every switch of {{ c['name'] }} each night with the SSH key, keep the version history, and
+  <p class="hint">Back up every switch of {{ c['name'] }} each night with the read-only SSH key, keep the version history, and
     get an email or a Teams / Slack message when a config changes or a switch cannot be read.</p>
   <p><a href="{{ url_for('nightly.nightly_page', cid=c['id']) }}">Set up nightly backups →</a></p>
 
@@ -166,9 +184,9 @@ set system login user {{ c['ssh_user'] or 'switchbuilder-ro' }} class switchbuil
     somewhere safe, or load it into another client or another Multi-Vendor Switch Config Builder server.</p>
   <form method="get" action="{{ url_for('backups.client_export', cid=c['id']) }}">
     <label style="font-weight:400"><input type="checkbox" name="configs" value="0"> Leave out the switch config backups (smaller file)</label><br>
-    <label style="font-weight:400"><input type="checkbox" name="secrets" value="1"> Include the SSH key and the EVE-NG password</label>
+    <label style="font-weight:400"><input type="checkbox" name="secrets" value="1"> Include the SSH keys and the EVE-NG password</label>
     <p class="hint" style="margin-top:2px">They stay encrypted with this server's master key, so they only work on this
-      server (for example after a mistake). Without them, a restore elsewhere needs a new SSH key and the EVE-NG password again.
+      server (for example after a mistake). Without them, a restore elsewhere needs new SSH keys and the EVE-NG password again.
       Either way, the file holds the switch configs, which contain the switches' own secrets: store it like a password.</p>
     <button type="submit">Download a backup</button>
   </form>

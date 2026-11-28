@@ -204,15 +204,26 @@ def test_web_route_per_client(switch, monkeypatch, caplog, tmp_path):
     assert resp.json["results"][0]["ok"], resp.json
     assert resp.json["results"][0]["backup"]["unchanged"] is True       # same config: not kept twice
     assert len(client.get("/backups").json["backups"]) == 1
-    # Members: only client admins can fetch.
+    # Other members (Read-only too) fetch only with the read-only key, as its own switch user.
     add_user(client, "bob", "bob-password-1")
     client.post("/clients/1", data={"csrf_token": form["csrf_token"], "action": "member_add", "username": "bob",
-                                     "role": "editor"})
+                                     "role": "viewer"})
     bob = application.test_client()
     assert login(bob, "bob", "bob-password-1").status_code == 302
-    assert 'id="ssh-go"' not in bob.get("/build/juniper").get_data(as_text=True)
-    assert bob.post("/ssh/fetch", json=body, headers={"X-CSRF-Token": token(bob)}).status_code == 403
+    page = bob.get("/build/juniper").get_data(as_text=True)
+    assert 'id="ssh-go"' in page and 'value="password"' not in page.split('id="ssh-box"')[1].split("</details>")[0]
+    assert 'id="ssh-known-btn"' not in page
+    bh = {"X-CSRF-Token": token(bob)}
+    assert bob.post("/ssh/fetch", json=body, headers=bh).status_code == 403        # no passwords for non-admins
+    with caplog.at_level("WARNING", logger="switchbuilder.ssh"):
+        resp = bob.post("/ssh/fetch", json={**body, "use_key": True, "username": "root"}, headers=bh)
+    assert resp.status_code == 200 and resp.json["results"][0]["ok"], resp.json
+    assert "as 'exbuilder-ro' (key)" in caplog.text and "as 'root'" not in caplog.text
     assert bob.get("/ssh/known").status_code == 403
+    # Without a read-only key, non-admins can't fetch at all.
+    client.post("/clients/1", data={"csrf_token": form["csrf_token"], "action": "key_delete", "kind": "ro"})
+    assert 'id="ssh-go"' not in bob.get("/build/juniper").get_data(as_text=True)
+    assert bob.post("/ssh/fetch", json={**body, "use_key": True}, headers=bh).status_code == 400
     assert bob.get("/clients/1").status_code == 403
     client.post("/clients/1", data={"csrf_token": form["csrf_token"], "action": "member_role", "user_id": "2",
                                      "role": "admin"})

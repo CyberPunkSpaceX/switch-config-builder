@@ -182,10 +182,10 @@ def _run(conn: sqlite3.Connection, cid: int, trigger: str) -> dict:
     nets, _ = sshfetch.check_networks(client["ssh_networks"])
     pkey = None
     try:
-        pkey = clients.ssh_key_for(client)
+        pkey = clients.ssh_key_for(client, "ro")
     except Exception as exc:  # noqa: BLE001 - a broken key must not stop the jobs service
         problem = f"the SSH key cannot be used ({exc.__class__.__name__})"
-    user = client["ssh_user"] or sshfetch.key_user()
+    user = clients.key_user_for(client, "ro")
     if not switches:
         problem = "no switches are listed"
     elif sshfetch.disabled() or not nets:

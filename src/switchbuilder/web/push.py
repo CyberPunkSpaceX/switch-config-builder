@@ -146,13 +146,14 @@ def _creds(row: sqlite3.Row, body: dict) -> tuple[str, str, object, int]:
     password = str(body.get("password") or "")
     pkey = None
     if body.get("use_key"):
-        pkey = clients.ssh_key_for(row)
+        pkey = clients.ssh_key_for(row, "cfg")   # pushes only ever use the config key
         if pkey is None:
-            clients._json_abort(400, "This client has no SSH key yet. A client admin makes one on the client page.")
-        username = username or row["ssh_user"] or sshfetch.key_user()
+            clients._json_abort(400, "This client has no config SSH key yet (the read-only key can't push). A client "
+                                     "admin makes one on the client page, or push with a password.")
+        username = username or clients.key_user_for(row, "cfg")
         password = ""
         if not username:
-            clients._json_abort(400, "Enter the switch username for the key.")
+            clients._json_abort(400, "Enter the switch username for the config key (or set it on the client page).")
     elif not (username and password):
         clients._json_abort(400, "Enter the switch username and password, or sign in with the SSH key.")
     try:

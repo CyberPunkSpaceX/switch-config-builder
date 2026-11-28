@@ -272,9 +272,13 @@ def create_app() -> Flask:
     @app.post("/ssh/fetch")
     def ssh_fetch():
         body = _project_from_request()
-        c = clients.need("admin")
+        c = clients.need("viewer")
+        admin = c["role"] == "admin"
         row = clients.row(c["id"])
         nets, _ = sshfetch.check_networks(row["ssh_networks"])
+        if not admin and not body.get("use_key"):
+            return {"error": f"Only admins of {c['name']} sign in to switches with a password. You can fetch with "
+                             "the client's read-only SSH key."}, 403
         if sshfetch.disabled() or not nets:
             return {"error": f"SSH fetch is off for {c['name']}. A client admin adds the switch networks on "
                              "the client page."}, 403
@@ -291,10 +295,12 @@ def create_app() -> Flask:
         password = str(body.get("password") or "")
         pkey = None
         if use_key:
-            pkey = clients.ssh_key_for(row)
+            pkey = clients.ssh_key_for(row, "ro")   # fetching only ever uses the read-only key
             if pkey is None:
-                return {"error": "This client has no SSH key yet. A client admin makes one on the client page."}, 400
-            username = username or row["ssh_user"] or sshfetch.key_user()
+                return {"error": "This client has no read-only SSH key yet. A client admin makes one on the client "
+                                 "page."}, 400
+            # Only admins may point the key at another switch account.
+            username = (username if admin else "") or clients.key_user_for(row, "ro")
             if not username:
                 return {"error": "Enter the switch username for the key."}, 400
             password = ""
